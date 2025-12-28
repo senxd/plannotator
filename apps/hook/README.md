@@ -67,8 +67,3 @@ When Claude Code calls `ExitPlanMode`, this hook intercepts and:
 2. Lets you annotate the plan visually
 3. Approve → Claude proceeds with implementation
 4. Request changes → Your annotations are sent back to Claude
-
-## Development
-
-The `server/` directory contains the source code for the Plannotator binary.
-It's compiled via `bun build --compile` and distributed via GitHub Releases.
