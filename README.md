@@ -36,9 +36,9 @@ irm https://plannotator.ai/install.ps1 | iex
 ```
 /plugin marketplace add backnotprop/plannotator
 /plugin install plannotator@plannotator
-```
 
-**Important:** Restart Claude Code after installing the plugin for the hooks to take effect.
+# IMPORTANT: Restart Claude Code after plugin install
+```
 
 See [apps/hook/README.md](apps/hook/README.md) for detailed installation instructions including a `manual hook` approach.
 
