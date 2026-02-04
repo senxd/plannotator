@@ -30,6 +30,7 @@ import {
   PERMISSION_MODE_OPTIONS,
   type PermissionMode,
 } from '../utils/permissionMode';
+import { getAutoClose, setAutoClose } from '../utils/storage';
 import { useAgents } from '../hooks/useAgents';
 
 interface SettingsProps {
@@ -56,6 +57,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
   const [planSave, setPlanSave] = useState<PlanSaveSettings>({ enabled: true, customPath: null });
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [agentWarning, setAgentWarning] = useState<string | null>(null);
+  const [autoClose, setAutoCloseState] = useState(false);
 
   // Fetch available agents for OpenCode
   const { agents: availableAgents, validateAgent, getAgentWarning } = useAgents(origin ?? null);
@@ -68,6 +70,7 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
       setAgent(getAgentSwitchSettings());
       setPlanSave(getPlanSaveSettings());
       setPermissionMode(getPermissionModeSettings().mode);
+      setAutoCloseState(getAutoClose());
 
       // Validate agent setting when dialog opens
       if (origin === 'opencode') {
@@ -186,6 +189,36 @@ export const Settings: React.FC<SettingsProps> = ({ taterMode, onTaterModeChange
                     </svg>
                   </button>
                 </div>
+              </div>
+
+              <div className="border-t border-border" />
+
+              {/* Auto-close Tab */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium">Auto-close Tab</div>
+                  <div className="text-xs text-muted-foreground">
+                    Close browser tab after submitting
+                  </div>
+                </div>
+                <button
+                  role="switch"
+                  aria-checked={autoClose}
+                  onClick={() => {
+                    const next = !autoClose;
+                    setAutoCloseState(next);
+                    setAutoClose(next);
+                  }}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    autoClose ? 'bg-primary' : 'bg-muted'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                      autoClose ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
               </div>
 
               {mode === 'plan' && (

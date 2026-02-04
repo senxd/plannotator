@@ -13,7 +13,7 @@ import { TaterSpritePullup } from '@plannotator/ui/components/TaterSpritePullup'
 import { Settings } from '@plannotator/ui/components/Settings';
 import { useSharing } from '@plannotator/ui/hooks/useSharing';
 import { useAgents } from '@plannotator/ui/hooks/useAgents';
-import { storage } from '@plannotator/ui/utils/storage';
+import { storage, getAutoClose } from '@plannotator/ui/utils/storage';
 import { UpdateBanner } from '@plannotator/ui/components/UpdateBanner';
 import { getObsidianSettings, getEffectiveVaultPath, CUSTOM_PATH_SENTINEL } from '@plannotator/ui/utils/obsidian';
 import { getBearSettings } from '@plannotator/ui/utils/bear';
@@ -544,6 +544,9 @@ const App: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (getAutoClose()) {
+        window.close();
+      }
       setSubmitted('approved');
     } catch {
       setIsSubmitting(false);
@@ -565,6 +568,9 @@ const App: React.FC = () => {
           },
         })
       });
+      if (getAutoClose()) {
+        window.close();
+      }
       setSubmitted('denied');
     } catch {
       setIsSubmitting(false);
