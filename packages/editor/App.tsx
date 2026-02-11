@@ -3,6 +3,7 @@ import { parseMarkdownToBlocks, exportDiff, extractFrontmatter, Frontmatter } fr
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import { AnnotationPanel } from '@plannotator/ui/components/AnnotationPanel';
 import { ExportModal } from '@plannotator/ui/components/ExportModal';
+import { ImportModal } from '@plannotator/ui/components/ImportModal';
 import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Annotation, Block, EditorMode } from '@plannotator/ui/types';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
@@ -11,20 +12,26 @@ import { ModeSwitcher } from '@plannotator/ui/components/ModeSwitcher';
 import { TaterSpriteRunning } from '@plannotator/ui/components/TaterSpriteRunning';
 import { TaterSpritePullup } from '@plannotator/ui/components/TaterSpritePullup';
 import { Settings } from '@plannotator/ui/components/Settings';
+import { TableOfContents } from '@plannotator/ui/components/TableOfContents';
 import { useSharing } from '@plannotator/ui/hooks/useSharing';
 import { useAgents } from '@plannotator/ui/hooks/useAgents';
+import { useActiveSection } from '@plannotator/ui/hooks/useActiveSection';
 import { storage, getAutoClose } from '@plannotator/ui/utils/storage';
 import { UpdateBanner } from '@plannotator/ui/components/UpdateBanner';
-import { getObsidianSettings, getEffectiveVaultPath, CUSTOM_PATH_SENTINEL } from '@plannotator/ui/utils/obsidian';
+import { getObsidianSettings, getEffectiveVaultPath, isObsidianConfigured, CUSTOM_PATH_SENTINEL } from '@plannotator/ui/utils/obsidian';
 import { getBearSettings } from '@plannotator/ui/utils/bear';
+import { getDefaultNotesApp } from '@plannotator/ui/utils/defaultNotesApp';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
 import { getPlanSaveSettings } from '@plannotator/ui/utils/planSave';
+import { getUIPreferences, needsUIFeaturesSetup, type UIPreferences } from '@plannotator/ui/utils/uiPreferences';
+import { getEditorMode, saveEditorMode } from '@plannotator/ui/utils/editorMode';
 import {
   getPermissionModeSettings,
   needsPermissionModeSetup,
   type PermissionMode,
 } from '@plannotator/ui/utils/permissionMode';
 import { PermissionModeSetup } from '@plannotator/ui/components/PermissionModeSetup';
+import { UIFeaturesSetup } from '@plannotator/ui/components/UIFeaturesSetup';
 import { ImageAnnotator } from '@plannotator/ui/components/ImageAnnotator';
 
 const PLAN_CONTENT = `# Implementation Plan: Real-time Collaboration
@@ -327,16 +334,18 @@ const App: React.FC = () => {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [frontmatter, setFrontmatter] = useState<Frontmatter | null>(null);
   const [showExport, setShowExport] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showFeedbackPrompt, setShowFeedbackPrompt] = useState(false);
   const [showClaudeCodeWarning, setShowClaudeCodeWarning] = useState(false);
   const [showAgentWarning, setShowAgentWarning] = useState(false);
   const [agentWarningMessage, setAgentWarningMessage] = useState('');
   const [isPanelOpen, setIsPanelOpen] = useState(true);
-  const [editorMode, setEditorMode] = useState<EditorMode>('selection');
+  const [editorMode, setEditorMode] = useState<EditorMode>(getEditorMode);
   const [taterMode, setTaterMode] = useState(() => {
     const stored = storage.getItem('plannotator-tater-mode');
     return stored === 'true';
   });
+  const [uiPrefs, setUiPrefs] = useState(() => getUIPreferences());
   const [isApiMode, setIsApiMode] = useState(false);
   const [origin, setOrigin] = useState<'claude-code' | 'opencode' | null>(null);
   const [globalAttachments, setGlobalAttachments] = useState<string[]>([]);
@@ -345,10 +354,19 @@ const App: React.FC = () => {
   const [submitted, setSubmitted] = useState<'approved' | 'denied' | null>(null);
   const [pendingPasteImage, setPendingPasteImage] = useState<{ file: File; blobUrl: string } | null>(null);
   const [showPermissionModeSetup, setShowPermissionModeSetup] = useState(false);
+  const [showUIFeaturesSetup, setShowUIFeaturesSetup] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('bypassPermissions');
   const [sharingEnabled, setSharingEnabled] = useState(true);
   const [repoInfo, setRepoInfo] = useState<{ display: string; branch?: string } | null>(null);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
+  const [initialExportTab, setInitialExportTab] = useState<'share' | 'diff' | 'notes'>();
+  const [noteSaveToast, setNoteSaveToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const viewerRef = useRef<ViewerHandle>(null);
+  const containerRef = useRef<HTMLElement>(null);
+
+  // Track active section for TOC highlighting
+  const headingCount = useMemo(() => blocks.filter(b => b.type === 'heading').length, [blocks]);
+  const activeSection = useActiveSection(containerRef, headingCount);
 
   // URL-based sharing
   const {
@@ -359,6 +377,7 @@ const App: React.FC = () => {
     pendingSharedAnnotations,
     sharedGlobalAttachments,
     clearPendingSharedAnnotations,
+    importFromShareUrl,
   } = useSharing(
     markdown,
     annotations,
@@ -394,6 +413,11 @@ const App: React.FC = () => {
     storage.setItem('plannotator-tater-mode', String(enabled));
   };
 
+  const handleEditorModeChange = (mode: EditorMode) => {
+    setEditorMode(mode);
+    saveEditorMode(mode);
+  };
+
   // Check if we're in API mode (served from Bun hook server)
   // Skip if we loaded from a shared URL
   useEffect(() => {
@@ -419,6 +443,8 @@ const App: React.FC = () => {
           // For Claude Code, check if user needs to configure permission mode
           if (data.origin === 'claude-code' && needsPermissionModeSetup()) {
             setShowPermissionModeSetup(true);
+          } else if (needsUIFeaturesSetup()) {
+            setShowUIFeaturesSetup(true);
           }
           // Load saved permission mode preference
           setPermissionMode(getPermissionModeSettings().mode);
@@ -588,8 +614,8 @@ const App: React.FC = () => {
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
       // Don't intercept if any modal is open
-      if (showExport || showFeedbackPrompt || showClaudeCodeWarning ||
-          showAgentWarning || showPermissionModeSetup || pendingPasteImage) return;
+      if (showExport || showImport || showFeedbackPrompt || showClaudeCodeWarning ||
+          showAgentWarning || showPermissionModeSetup || showUIFeaturesSetup || pendingPasteImage) return;
 
       // Don't intercept if already submitted or submitting
       if (submitted || isSubmitting) return;
@@ -619,8 +645,8 @@ const App: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    showExport, showFeedbackPrompt, showClaudeCodeWarning, showAgentWarning,
-    showPermissionModeSetup, pendingPasteImage,
+    showExport, showImport, showFeedbackPrompt, showClaudeCodeWarning, showAgentWarning,
+    showPermissionModeSetup, showUIFeaturesSetup, pendingPasteImage,
     submitted, isSubmitting, isApiMode, annotations.length,
     origin, getAgentWarning,
   ]);
@@ -657,7 +683,112 @@ const App: React.FC = () => {
     setGlobalAttachments(prev => prev.filter(p => p !== path));
   };
 
+  const handleTocNavigate = (blockId: string) => {
+    // Navigation handled by TableOfContents component
+    // This is just a placeholder for future custom logic
+  };
+
   const diffOutput = useMemo(() => exportDiff(blocks, annotations, globalAttachments), [blocks, annotations, globalAttachments]);
+
+  // Quick-save handlers for export dropdown and keyboard shortcut
+  const handleDownloadDiff = () => {
+    setShowExportDropdown(false);
+    const blob = new Blob([diffOutput], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'annotations.diff';
+    a.click();
+    URL.revokeObjectURL(url);
+    setNoteSaveToast({ type: 'success', message: 'Downloaded diff' });
+    setTimeout(() => setNoteSaveToast(null), 3000);
+  };
+
+  const handleQuickSaveToNotes = async (target: 'obsidian' | 'bear') => {
+    setShowExportDropdown(false);
+    const body: { obsidian?: object; bear?: object } = {};
+
+    if (target === 'obsidian') {
+      const s = getObsidianSettings();
+      const vaultPath = getEffectiveVaultPath(s);
+      if (vaultPath) {
+        body.obsidian = { vaultPath, folder: s.folder || 'plannotator', plan: markdown };
+      }
+    }
+    if (target === 'bear') {
+      body.bear = { plan: markdown };
+    }
+
+    try {
+      const res = await fetch('/api/save-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      const result = data.results?.[target];
+      if (result?.success) {
+        setNoteSaveToast({ type: 'success', message: `Saved to ${target === 'obsidian' ? 'Obsidian' : 'Bear'}` });
+      } else {
+        setNoteSaveToast({ type: 'error', message: result?.error || 'Save failed' });
+      }
+    } catch {
+      setNoteSaveToast({ type: 'error', message: 'Save failed' });
+    }
+    setTimeout(() => setNoteSaveToast(null), 3000);
+  };
+
+  // Cmd/Ctrl+S keyboard shortcut — save to default notes app
+  useEffect(() => {
+    const handleSaveShortcut = (e: KeyboardEvent) => {
+      if (e.key !== 's' || !(e.metaKey || e.ctrlKey)) return;
+
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      if (showExport || showFeedbackPrompt || showClaudeCodeWarning ||
+          showAgentWarning || showPermissionModeSetup || showUIFeaturesSetup || pendingPasteImage) return;
+
+      if (submitted || !isApiMode) return;
+
+      e.preventDefault();
+
+      const defaultApp = getDefaultNotesApp();
+      const obsOk = isObsidianConfigured();
+      const bearOk = getBearSettings().enabled;
+
+      if (defaultApp === 'download') {
+        handleDownloadDiff();
+      } else if (defaultApp === 'obsidian' && obsOk) {
+        handleQuickSaveToNotes('obsidian');
+      } else if (defaultApp === 'bear' && bearOk) {
+        handleQuickSaveToNotes('bear');
+      } else {
+        setInitialExportTab('notes');
+        setShowExport(true);
+      }
+    };
+
+    window.addEventListener('keydown', handleSaveShortcut);
+    return () => window.removeEventListener('keydown', handleSaveShortcut);
+  }, [
+    showExport, showFeedbackPrompt, showClaudeCodeWarning, showAgentWarning,
+    showPermissionModeSetup, showUIFeaturesSetup, pendingPasteImage,
+    submitted, isApiMode, markdown, diffOutput,
+  ]);
+
+  // Close export dropdown on click outside
+  useEffect(() => {
+    if (!showExportDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-export-dropdown]')) {
+        setShowExportDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showExportDropdown]);
 
   const agentName = useMemo(() => {
     if (origin === 'opencode') return 'OpenCode';
@@ -671,7 +802,7 @@ const App: React.FC = () => {
         {/* Tater sprites */}
         {taterMode && <TaterSpriteRunning />}
         {/* Minimal Header */}
-        <header className="h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl z-50">
+        <header className="h-12 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-20">
           <div className="flex items-center gap-2 md:gap-3">
             <a
               href="https://plannotator.ai"
@@ -772,7 +903,7 @@ const App: React.FC = () => {
             )}
 
             <ModeToggle />
-            <Settings taterMode={taterMode} onTaterModeChange={handleTaterModeChange} onIdentityChange={handleIdentityChange} origin={origin} />
+            <Settings taterMode={taterMode} onTaterModeChange={handleTaterModeChange} onIdentityChange={handleIdentityChange} origin={origin} onUIPreferencesChange={setUiPrefs} />
 
             <button
               onClick={() => setIsPanelOpen(!isPanelOpen)}
@@ -787,27 +918,127 @@ const App: React.FC = () => {
               </svg>
             </button>
 
-            <button
-              onClick={() => setShowExport(true)}
-              className="p-1.5 md:px-2.5 md:py-1 rounded-md text-xs font-medium bg-muted hover:bg-muted/80 transition-colors"
-              title="Export"
-            >
-              <svg className="w-4 h-4 md:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              <span className="hidden md:inline">Export</span>
-            </button>
+            <div className="relative flex" data-export-dropdown>
+              <button
+                onClick={() => { setInitialExportTab(undefined); setShowExport(true); }}
+                className="p-1.5 md:px-2.5 md:py-1 rounded-l-md text-xs font-medium bg-muted hover:bg-muted/80 transition-colors"
+                title="Export"
+              >
+                <svg className="w-4 h-4 md:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                <span className="hidden md:inline">Export</span>
+              </button>
+              <button
+                onClick={() => setShowExportDropdown(prev => !prev)}
+                className="px-1 md:px-1.5 rounded-r-md text-xs bg-muted hover:bg-muted/80 border-l border-border/50 transition-colors flex items-center"
+                title="Quick save options"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {showExportDropdown && (
+                <div className="absolute top-full right-0 mt-1 w-48 bg-popover border border-border rounded-lg shadow-xl z-50 py-1">
+                  {sharingEnabled && (
+                    <button
+                      onClick={async () => {
+                        setShowExportDropdown(false);
+                        try {
+                          await navigator.clipboard.writeText(shareUrl);
+                          setNoteSaveToast({ type: 'success', message: 'Share link copied' });
+                        } catch {
+                          setNoteSaveToast({ type: 'error', message: 'Failed to copy' });
+                        }
+                        setTimeout(() => setNoteSaveToast(null), 3000);
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                      Copy Share Link
+                    </button>
+                  )}
+                  <button
+                    onClick={handleDownloadDiff}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
+                  >
+                    <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download Diff
+                  </button>
+                  {isApiMode && isObsidianConfigured() && (
+                    <button
+                      onClick={() => handleQuickSaveToNotes('obsidian')}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                      </svg>
+                      Save to Obsidian
+                    </button>
+                  )}
+                  {isApiMode && getBearSettings().enabled && (
+                    <button
+                      onClick={() => handleQuickSaveToNotes('bear')}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                      </svg>
+                      Save to Bear
+                    </button>
+                  )}
+                  {isApiMode && !isObsidianConfigured() && !getBearSettings().enabled && (
+                    <div className="px-3 py-2 text-[10px] text-muted-foreground">
+                      No notes apps configured.
+                    </div>
+                  )}
+                  {sharingEnabled && (
+                    <>
+                      <div className="my-1 border-t border-border" />
+                      <button
+                        onClick={() => {
+                          setShowExportDropdown(false);
+                          setShowImport(true);
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted transition-colors flex items-center gap-2"
+                      >
+                        <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Import Review
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
         {/* Main Content */}
         <div className="flex-1 flex overflow-hidden">
+          {/* Table of Contents */}
+          {uiPrefs.tocEnabled && (
+            <TableOfContents
+              blocks={blocks}
+              annotations={annotations}
+              activeId={activeSection}
+              onNavigate={handleTocNavigate}
+              className="hidden lg:block w-60 sticky top-12 h-[calc(100vh-3rem)] flex-shrink-0"
+            />
+          )}
+
           {/* Document Area */}
-          <main className="flex-1 overflow-y-auto bg-grid">
+          <main ref={containerRef} className="flex-1 overflow-y-auto bg-grid">
             <div className="min-h-full flex flex-col items-center px-4 py-3 md:px-10 md:py-8 xl:px-16">
               {/* Mode Switcher */}
               <div className="w-full max-w-[832px] 2xl:max-w-5xl mb-3 md:mb-4 flex justify-start">
-                <ModeSwitcher mode={editorMode} onChange={setEditorMode} taterMode={taterMode} />
+                <ModeSwitcher mode={editorMode} onChange={handleEditorModeChange} taterMode={taterMode} />
               </div>
 
               <Viewer
@@ -825,6 +1056,7 @@ const App: React.FC = () => {
                 onAddGlobalAttachment={handleAddGlobalAttachment}
                 onRemoveGlobalAttachment={handleRemoveGlobalAttachment}
                 repoInfo={repoInfo}
+                stickyActions={uiPrefs.stickyActionsEnabled}
               />
             </div>
           </main>
@@ -846,13 +1078,23 @@ const App: React.FC = () => {
         {/* Export Modal */}
         <ExportModal
           isOpen={showExport}
-          onClose={() => setShowExport(false)}
+          onClose={() => { setShowExport(false); setInitialExportTab(undefined); }}
           shareUrl={shareUrl}
           shareUrlSize={shareUrlSize}
           diffOutput={diffOutput}
           annotationCount={annotations.length}
           taterSprite={taterMode ? <TaterSpritePullup /> : undefined}
           sharingEnabled={sharingEnabled}
+          markdown={markdown}
+          isApiMode={isApiMode}
+          initialTab={initialExportTab}
+        />
+
+        {/* Import Modal */}
+        <ImportModal
+          isOpen={showImport}
+          onClose={() => setShowImport(false)}
+          onImport={importFromShareUrl}
         />
 
         {/* Feedback prompt dialog */}
@@ -911,6 +1153,17 @@ const App: React.FC = () => {
           variant="warning"
           showCancel
         />
+
+        {/* Save-to-notes toast */}
+        {noteSaveToast && (
+          <div className={`fixed top-16 right-4 z-50 px-3 py-2 rounded-lg text-xs font-medium shadow-lg transition-opacity ${
+            noteSaveToast.type === 'success'
+              ? 'bg-success/15 text-success border border-success/30'
+              : 'bg-destructive/15 text-destructive border border-destructive/30'
+          }`}>
+            {noteSaveToast.message}
+          </div>
+        )}
 
         {/* Completion overlay - shown after approve/deny */}
         {submitted && (
@@ -972,6 +1225,18 @@ const App: React.FC = () => {
           onComplete={(mode) => {
             setPermissionMode(mode);
             setShowPermissionModeSetup(false);
+            if (needsUIFeaturesSetup()) {
+              setShowUIFeaturesSetup(true);
+            }
+          }}
+        />
+
+        {/* UI Features Setup (TOC & Sticky Actions) */}
+        <UIFeaturesSetup
+          isOpen={showUIFeaturesSetup}
+          onComplete={(prefs) => {
+            setUiPrefs(prefs);
+            setShowUIFeaturesSetup(false);
           }}
         />
       </div>

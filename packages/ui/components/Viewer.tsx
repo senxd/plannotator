@@ -2,37 +2,12 @@ import React, { useRef, useState, useEffect, forwardRef, useImperativeHandle, us
 import Highlighter from '@plannotator/web-highlighter';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
-import mermaid from 'mermaid';
-
-// Initialize mermaid with dark theme
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'dark',
-  themeVariables: {
-    primaryColor: '#3b82f6',
-    primaryTextColor: '#f8fafc',
-    primaryBorderColor: '#475569',
-    lineColor: '#64748b',
-    secondaryColor: '#1e293b',
-    tertiaryColor: '#0f172a',
-    background: '#1e293b',
-    mainBkg: '#1e293b',
-    nodeBorder: '#475569',
-    clusterBkg: '#1e293b',
-    clusterBorder: '#475569',
-    titleColor: '#f8fafc',
-    edgeLabelBackground: '#1e293b',
-  },
-  flowchart: {
-    htmlLabels: true,
-    curve: 'basis',
-  },
-});
 import { Block, Annotation, AnnotationType, EditorMode } from '../types';
 import { Frontmatter } from '../utils/parser';
 import { AnnotationToolbar } from './AnnotationToolbar';
 import { TaterSpriteSitting } from './TaterSpriteSitting';
 import { AttachmentsButton } from './AttachmentsButton';
+import { MermaidBlock } from './MermaidBlock';
 import { getIdentity } from '../utils/identity';
 
 interface ViewerProps {
@@ -49,6 +24,7 @@ interface ViewerProps {
   onAddGlobalAttachment?: (path: string) => void;
   onRemoveGlobalAttachment?: (path: string) => void;
   repoInfo?: { display: string; branch?: string } | null;
+  stickyActions?: boolean;
 }
 
 export interface ViewerHandle {
@@ -104,6 +80,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   onAddGlobalAttachment,
   onRemoveGlobalAttachment,
   repoInfo,
+  stickyActions = true,
 }, ref) => {
   const [copied, setCopied] = useState(false);
   const [showGlobalCommentInput, setShowGlobalCommentInput] = useState(false);
@@ -161,6 +138,20 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   const [isCodeBlockToolbarExiting, setIsCodeBlockToolbarExiting] = useState(false);
   const [isCodeBlockToolbarLocked, setIsCodeBlockToolbarLocked] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const stickySentinelRef = useRef<HTMLDivElement>(null);
+  const [isStuck, setIsStuck] = useState(false);
+
+  // Detect when sticky action bar is "stuck" to show card background
+  useEffect(() => {
+    if (!stickyActions || !stickySentinelRef.current) return;
+    const scrollContainer = document.querySelector('main');
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsStuck(!entry.isIntersecting),
+      { root: scrollContainer, threshold: 0 }
+    );
+    observer.observe(stickySentinelRef.current);
+    return () => observer.disconnect();
+  }, [stickyActions]);
 
   // Keep refs in sync with props
   useEffect(() => {
@@ -327,8 +318,25 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
       const manualHighlights = containerRef.current?.querySelectorAll(`[data-bind-id="${id}"]`);
       manualHighlights?.forEach(el => {
         const parent = el.parentNode;
-        while (el.firstChild) {
-          parent?.insertBefore(el.firstChild, el);
+        
+        // Check if this is a code block annotation (parent is <code> element)
+        if (parent && parent.nodeName === 'CODE') {
+          // For code blocks, we need to restore the plain text and re-highlight
+          const codeEl = parent as HTMLElement;
+          const plainText = el.textContent || '';
+          codeEl.textContent = plainText;
+          
+          // Re-apply syntax highlighting
+          const block = blocks.find(b => b.id === codeEl.closest('[data-block-id]')?.getAttribute('data-block-id'));
+          if (block?.language) {
+            codeEl.className = `hljs font-mono language-${block.language}`;
+            hljs.highlightElement(codeEl);
+          }
+        } else {
+          // For regular text, unwrap the mark
+          while (el.firstChild) {
+            parent?.insertBefore(el.firstChild, el);
+          }
         }
         el.remove();
       });
@@ -567,27 +575,17 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     const codeEl = hoveredCodeBlock.element.querySelector('code');
     if (!codeEl) return;
 
-    // Create a range that selects all content in the code block
-    const range = document.createRange();
-    range.selectNodeContents(codeEl);
-
-    // Set the browser selection to this range
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-
     // Use highlighter.fromRange which triggers CREATE event internally
     // We need to handle this synchronously, so we'll create the annotation directly
     const id = `codeblock-${Date.now()}`;
     const codeText = codeEl.textContent || '';
 
-    // Wrap the content manually
+    // Instead of using surroundContents (which breaks with syntax-highlighted code),
+    // we replace the innerHTML entirely with a mark wrapper containing the plain text
     const wrapper = document.createElement('mark');
     wrapper.className = 'annotation-highlight';
     wrapper.dataset.bindId = id;
-
-    // Extract and wrap content
-    range.surroundContents(wrapper);
+    wrapper.textContent = codeText;
 
     // Add the appropriate class
     if (type === AnnotationType.DELETION) {
@@ -595,6 +593,10 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     } else if (type === AnnotationType.COMMENT) {
       wrapper.classList.add('comment');
     }
+
+    // Replace code element's content with the wrapper
+    codeEl.innerHTML = '';
+    codeEl.appendChild(wrapper);
 
     // Create the annotation
     const newAnnotation: Annotation = {
@@ -613,7 +615,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     onAddAnnotationRef.current(newAnnotation);
 
     // Clear selection
-    selection?.removeAllRanges();
+    window.getSelection()?.removeAllRanges();
     setHoveredCodeBlock(null);
     setIsCodeBlockToolbarLocked(false);
   };
@@ -647,8 +649,11 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
           </div>
         )}
 
+        {/* Sentinel for sticky detection */}
+        {stickyActions && <div ref={stickySentinelRef} className="h-0 w-0 float-right" aria-hidden="true" />}
+
         {/* Header buttons - top right */}
-        <div className="absolute top-3 right-3 md:top-5 md:right-5 flex items-start gap-2">
+        <div className={`${stickyActions ? 'sticky top-3' : ''} z-30 float-right flex items-start gap-2 rounded-lg p-2 transition-colors duration-150 ${isStuck ? 'bg-card/95 backdrop-blur-sm shadow-sm' : ''} -mr-4 -mt-4 md:-mr-5 md:-mt-5 lg:-mr-7 lg:-mt-7 xl:-mr-9 xl:-mt-9`}>
           {/* Attachments button */}
           {onAddGlobalAttachment && onRemoveGlobalAttachment && (
             <AttachmentsButton
@@ -939,7 +944,7 @@ const BlockRenderer: React.FC<{ block: Block }> = ({ block }) => {
         3: 'text-base font-semibold mb-2 mt-6 text-foreground/80',
       }[block.level || 1] || 'text-base font-semibold mb-2 mt-4';
 
-      return <Tag className={styles} data-block-id={block.id}><InlineMarkdown text={block.content} /></Tag>;
+      return <Tag className={styles} data-block-id={block.id} data-block-type="heading"><InlineMarkdown text={block.content} /></Tag>;
 
     case 'blockquote':
       return (
@@ -1041,117 +1046,6 @@ interface CodeBlockProps {
   onLeave: () => void;
   isHovered: boolean;
 }
-
-/**
- * Renders a mermaid diagram block.
- */
-const MermaidBlock: React.FC<{ block: Block }> = ({ block }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [svg, setSvg] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
-  const [showSource, setShowSource] = useState(true);
-
-  useEffect(() => {
-    const renderDiagram = async () => {
-      try {
-        // Generate unique ID for this diagram
-        const id = `mermaid-${block.id}`;
-        const { svg: renderedSvg } = await mermaid.render(id, block.content);
-        setSvg(renderedSvg);
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to render diagram');
-        setSvg('');
-      }
-    };
-
-    renderDiagram();
-  }, [block.content, block.id]);
-
-  // Fix viewBox after SVG is rendered to properly center content
-  useEffect(() => {
-    if (!svg || showSource || !containerRef.current) return;
-
-    const svgEl = containerRef.current.querySelector('svg');
-    if (!svgEl) return;
-
-    // Small delay to ensure SVG is fully rendered
-    const timer = setTimeout(() => {
-      try {
-        // Get the actual content bounds using getBBox on the first g element
-        const contentGroup = svgEl.querySelector('g');
-        if (!contentGroup) return;
-
-        const bbox = (contentGroup as SVGGraphicsElement).getBBox();
-
-        // Add small padding
-        const padding = 8;
-        const viewBox = `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + padding * 2} ${bbox.height + padding * 2}`;
-
-        svgEl.setAttribute('viewBox', viewBox);
-        svgEl.removeAttribute('width');
-        svgEl.removeAttribute('height');
-        svgEl.style.maxWidth = '100%';
-        svgEl.style.height = 'auto';
-      } catch (e) {
-        // Ignore errors
-      }
-    }, 50);
-
-    return () => clearTimeout(timer);
-  }, [svg, showSource]);
-
-  if (error) {
-    // Show error with source code fallback
-    return (
-      <div className="my-5 rounded-lg border border-destructive/30 bg-destructive/5 overflow-hidden">
-        <div className="px-3 py-2 bg-destructive/10 border-b border-destructive/20 flex items-center gap-2">
-          <svg className="w-4 h-4 text-destructive" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-          </svg>
-          <span className="text-xs text-destructive font-medium">Mermaid Error</span>
-        </div>
-        <pre className="p-3 text-xs text-destructive/80 overflow-x-auto">{error}</pre>
-        <pre className="p-3 text-xs text-muted-foreground bg-muted/30 border-t border-border/30 overflow-x-auto">
-          <code>{block.content}</code>
-        </pre>
-      </div>
-    );
-  }
-
-  return (
-    <div className="my-5 group relative" data-block-id={block.id}>
-      {/* Toggle source button */}
-      <button
-        onClick={() => setShowSource(!showSource)}
-        className="absolute top-2 right-2 p-1.5 rounded-md bg-muted/80 hover:bg-muted text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity z-10"
-        title={showSource ? 'Show diagram' : 'Show source'}
-      >
-        {showSource ? (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-          </svg>
-        ) : (
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-          </svg>
-        )}
-      </button>
-
-      {showSource ? (
-        <pre className="rounded-lg text-[13px] overflow-x-auto bg-muted/50 border border-border/30 p-4">
-          <code className="hljs font-mono language-mermaid">{block.content}</code>
-        </pre>
-      ) : (
-        <div
-          ref={containerRef}
-          className="rounded-lg bg-muted/30 border border-border/30 p-4 overflow-x-auto flex justify-center"
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
-      )}
-    </div>
-  );
-};
 
 const CodeBlock: React.FC<CodeBlockProps> = ({ block, onHover, onLeave, isHovered }) => {
   const [copied, setCopied] = useState(false);
